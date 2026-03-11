@@ -24,12 +24,14 @@ try:
 except ImportError:
     WHISPER_AVAILABLE = False
 
+import openrouter
+
 
 class WhisperTranscriber:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("Whisper Transcriber")
-        self.root.geometry("600x500")
+        self.root.geometry("700x700")
         self.root.resizable(True, True)
 
         # Application state
@@ -121,18 +123,41 @@ class WhisperTranscriber:
             row=2, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10)
         )
         transcription_frame.columnconfigure(0, weight=1)
-        transcription_frame.rowconfigure(0, weight=1)
+        transcription_frame.rowconfigure(1, weight=1)
+        transcription_frame.rowconfigure(4, weight=1)
 
+        ttk.Label(transcription_frame, text="Original").grid(
+            row=0, column=0, sticky=tk.W
+        )
         self.transcription_text = scrolledtext.ScrolledText(
-            transcription_frame, height=10, wrap=tk.WORD
+            transcription_frame, height=6, wrap=tk.WORD
         )
         self.transcription_text.grid(
-            row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10)
+            row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(2, 6)
         )
+        self.transcription_text.bind("<Control-a>", lambda e: self._select_all(self.transcription_text))
+
+        self.improve_ai_button = ttk.Button(
+            transcription_frame,
+            text="✨ Improve with AI",
+            command=self.run_ai_improvement,
+        )
+        self.improve_ai_button.grid(row=2, column=0, sticky=tk.W, pady=(0, 6))
+
+        ttk.Label(transcription_frame, text="AI Enhanced").grid(
+            row=3, column=0, sticky=tk.W
+        )
+        self.improved_text = scrolledtext.ScrolledText(
+            transcription_frame, height=6, wrap=tk.WORD
+        )
+        self.improved_text.grid(
+            row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(2, 10)
+        )
+        self.improved_text.bind("<Control-a>", lambda e: self._select_all(self.improved_text))
 
         # Buttons frame
         buttons_frame = ttk.Frame(transcription_frame)
-        buttons_frame.grid(row=1, column=0, sticky=(tk.W, tk.E))
+        buttons_frame.grid(row=5, column=0, sticky=(tk.W, tk.E))
         buttons_frame.columnconfigure(0, weight=1)
 
         self.copy_button = ttk.Button(
@@ -306,22 +331,23 @@ class WhisperTranscriber:
         """Check for transcription results and update UI"""
         try:
             while True:
-                result_type, message = self.transcription_queue.get_nowait()
+                item = self.transcription_queue.get_nowait()
+                result_type, message = item[0], item[1]
 
                 self.progress.stop()
                 self.recording_status.config(text="Ready to record")
 
                 if result_type == "success":
-                    # Add transcription to text widget
-                    self.transcription_text.insert(tk.END, message + "\n\n")
-                    self.transcription_text.see(tk.END)
+                    self._display_original(message)
 
-                    # Automatically copy to clipboard
-                    try:
-                        pyperclip.copy(message)
-                        self.update_status(f"Transcribed and copied to clipboard!")
-                    except Exception as e:
-                        self.update_status(f"Transcribed (clipboard copy failed: {e})")
+                elif result_type == "improved":
+                    self.improve_ai_button.config(state="normal")
+                    self._display_improved(message)
+
+                elif result_type == "improved_error":
+                    self.improve_ai_button.config(state="normal")
+                    self.update_status("AI improvement failed")
+                    messagebox.showwarning("AI Improvement Failed", message)
 
                 elif result_type == "error":
                     self.update_status(f"Error: {message}")
@@ -333,9 +359,64 @@ class WhisperTranscriber:
         # Schedule next check
         self.root.after(100, self.check_transcription_queue)
 
-    def copy_to_clipboard(self):
-        """Copy current transcription to clipboard"""
+    def run_ai_improvement(self):
+        """Triggered by the Improve with AI button."""
         text = self.transcription_text.get(1.0, tk.END).strip()
+        if not text:
+            messagebox.showwarning("Nothing to improve", "The original transcription is empty.")
+            return
+        self.improve_ai_button.config(state="disabled")
+        self.update_status("Improving with AI...")
+        self.progress.start()
+        threading.Thread(target=self._improve_and_display, args=(text,), daemon=True).start()
+
+    def _select_all(self, widget):
+        widget.tag_add("sel", "1.0", "end")
+        return "break"
+
+    def _improve_and_display(self, text: str):
+        """Call OpenRouter to improve the transcription, then post result to queue."""
+        try:
+            improved = openrouter.improve_transcription(text)
+            self.transcription_queue.put(("improved", improved))
+        except Exception as e:
+            self.transcription_queue.put(("improved_error", str(e)))
+
+    def _display_original(self, text: str):
+        """Write raw transcription to the original box and copy to clipboard."""
+        self.transcription_text.insert(tk.END, text + "\n\n")
+        self.transcription_text.see(tk.END)
+        try:
+            pyperclip.copy(text)
+            self.update_status("Transcribed and copied to clipboard!")
+        except Exception as e:
+            self.update_status(f"Transcribed (clipboard copy failed: {e})")
+
+    def _display_improved(self, text: str):
+        """Write improved text to the AI enhanced box and copy to clipboard."""
+        self.improved_text.insert(tk.END, text + "\n\n")
+        self.improved_text.see(tk.END)
+        try:
+            pyperclip.copy(text)
+            self.update_status("AI enhanced and copied to clipboard!")
+        except Exception as e:
+            self.update_status(f"AI enhanced (clipboard copy failed: {e})")
+
+    def _display_transcription(self, text: str):
+        """Write transcription to original box and copy to clipboard (no AI mode)."""
+        self.transcription_text.insert(tk.END, text + "\n\n")
+        self.transcription_text.see(tk.END)
+        try:
+            pyperclip.copy(text)
+            self.update_status("Transcribed and copied to clipboard!")
+        except Exception as e:
+            self.update_status(f"Transcribed (clipboard copy failed: {e})")
+
+    def copy_to_clipboard(self):
+        """Copy AI enhanced text if available, otherwise original"""
+        text = self.improved_text.get(1.0, tk.END).strip()
+        if not text:
+            text = self.transcription_text.get(1.0, tk.END).strip()
         if text:
             try:
                 pyperclip.copy(text)
@@ -346,8 +427,9 @@ class WhisperTranscriber:
             messagebox.showwarning("Warning", "No text to copy!")
 
     def clear_transcription(self):
-        """Clear the transcription text"""
+        """Clear both transcription boxes"""
         self.transcription_text.delete(1.0, tk.END)
+        self.improved_text.delete(1.0, tk.END)
         self.update_status("Transcription cleared")
 
     def update_status(self, message):

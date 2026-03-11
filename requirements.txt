@@ -2,4 +2,5 @@ openai-whisper
 sounddevice
 numpy
 scipy
-pyperclip 
+pyperclip
+requests
